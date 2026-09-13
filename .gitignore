@@ -22,6 +22,7 @@ compile_commands.json
 *.vtune
 *.vtuneresult
 r[0-9][0-9][0-9]*/
+vtune_results/
 
 # IDEs & Editors
 .vscode/

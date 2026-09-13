@@ -10,7 +10,7 @@
  * Purpose: Represents an inner 4x4 submatrix of 32-bit floating point numbers.
  *          16-byte aligned for direct compatibility with SSE 128-bit operations.
  */
-struct alignas(16) Block4x4 {
+struct alignas(32) Block4x4 {
     float data[4][4];
 };
 
