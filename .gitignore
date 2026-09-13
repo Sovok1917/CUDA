@@ -1,0 +1,35 @@
+# C/C++
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.d
+*.pdb
+*.ilk
+*.exp
+build/
+cmake-build-*/
+compile_commands.json
+.ninja_*
+
+# Intel VTune profiling artifacts
+*.vtune
+*.vtuneresult
+r[0-9][0-9][0-9]*/
+
+# IDEs & Editors
+.vscode/
+.idea/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
