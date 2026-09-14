@@ -102,7 +102,7 @@ private:
  *          C - pre-zeroed output matrix [L x N x 4 x 4].
  * Return:  void.
  */
-__attribute__((noinline))
+
 void matmul_scalar(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const size_t L = A.rows();
     const size_t M = A.cols();
@@ -135,7 +135,6 @@ void matmul_scalar(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
  *          C - pre-zeroed output matrix [L x N x 4 x 4].
  * Return:  void.
  */
-__attribute__((noinline))
 void matmul_autovec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const size_t L = A.rows();
     const size_t M = A.cols();
@@ -170,7 +169,6 @@ void matmul_autovec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
  *          C - pre-zeroed output block matrix [L x N x 4 x 4].
  * Return:  void.
  */
-__attribute__((noinline))
 void matmul_manvec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const size_t L = A.rows();
     const size_t M = A.cols();
