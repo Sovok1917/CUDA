@@ -12,7 +12,7 @@
 class Matrix4D {
 public:
     Matrix4D(int outer_rows, int outer_cols)
-        : rows_(outer_rows), cols_(outer_cols) {
+    : rows_(outer_rows), cols_(outer_cols) {
         int total_floats = rows_ * cols_ * 16;
         data_ = static_cast<float*>(aligned_alloc(64, total_floats * sizeof(float)));
         zero();
@@ -115,39 +115,21 @@ void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB)
 
                         int j = jb;
                         for (; j <= j_end - 2; j += 2) {
-                            const __m256 b0_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 0));
-                            const __m256 b0_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 16));
-                            const __m256 b1_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 4));
-                            const __m256 b1_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 20));
-                            const __m256 b2_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 8));
-                            const __m256 b2_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 24));
-                            const __m256 b3_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 12));
-                            const __m256 b3_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 28));
-
                             __m256 c01_0 = _mm256_load_ps(c_ptr + 0);
                             __m256 c23_0 = _mm256_load_ps(c_ptr + 8);
                             __m256 c01_1 = _mm256_load_ps(c_ptr + 16);
                             __m256 c23_1 = _mm256_load_ps(c_ptr + 24);
 
-                            c01_0 = _mm256_fmadd_ps(a01[0], b0_0, c01_0);
-                            c23_0 = _mm256_fmadd_ps(a23[0], b0_0, c23_0);
-                            c01_1 = _mm256_fmadd_ps(a01[0], b0_1, c01_1);
-                            c23_1 = _mm256_fmadd_ps(a23[0], b0_1, c23_1);
+                            #pragma GCC unroll 4
+                            for (int p = 0; p < 4; ++p) {
+                                const __m256 b0 = _mm256_broadcast_ps((const __m128*)(b_ptr + p * 4));
+                                const __m256 b1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 16 + p * 4));
 
-                            c01_0 = _mm256_fmadd_ps(a01[1], b1_0, c01_0);
-                            c23_0 = _mm256_fmadd_ps(a23[1], b1_0, c23_0);
-                            c01_1 = _mm256_fmadd_ps(a01[1], b1_1, c01_1);
-                            c23_1 = _mm256_fmadd_ps(a23[1], b1_1, c23_1);
-
-                            c01_0 = _mm256_fmadd_ps(a01[2], b2_0, c01_0);
-                            c23_0 = _mm256_fmadd_ps(a23[2], b2_0, c23_0);
-                            c01_1 = _mm256_fmadd_ps(a01[2], b2_1, c01_1);
-                            c23_1 = _mm256_fmadd_ps(a23[2], b2_1, c23_1);
-
-                            c01_0 = _mm256_fmadd_ps(a01[3], b3_0, c01_0);
-                            c23_0 = _mm256_fmadd_ps(a23[3], b3_0, c23_0);
-                            c01_1 = _mm256_fmadd_ps(a01[3], b3_1, c01_1);
-                            c23_1 = _mm256_fmadd_ps(a23[3], b3_1, c23_1);
+                                c01_0 = _mm256_fmadd_ps(a01[p], b0, c01_0);
+                                c23_0 = _mm256_fmadd_ps(a23[p], b0, c23_0);
+                                c01_1 = _mm256_fmadd_ps(a01[p], b1, c01_1);
+                                c23_1 = _mm256_fmadd_ps(a23[p], b1, c23_1);
+                            }
 
                             _mm256_store_ps(c_ptr + 0, c01_0);
                             _mm256_store_ps(c_ptr + 8, c23_0);
@@ -162,6 +144,7 @@ void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB)
                             __m256 c01 = _mm256_load_ps(c_ptr + 0);
                             __m256 c23 = _mm256_load_ps(c_ptr + 8);
 
+                            #pragma GCC unroll 4
                             for (int p = 0; p < 4; ++p) {
                                 const __m256 b_row = _mm256_broadcast_ps((const __m128*)(b_ptr + p * 4));
                                 c01 = _mm256_fmadd_ps(a01[p], b_row, c01);
@@ -221,13 +204,13 @@ int main(int argc, char* argv[]) {
 
     parse_dimensions(argc, argv, L, M, N, NB);
 
-    std::cout << "Lab 02 (Cache Access Optimization)\n";
+    std::cout << "Lab 02\n";
     std::cout << "Dimensions: L=" << L << ", M=" << M << ", N=" << N
-              << " [" << (L * 4) << "x" << (M * 4) << " * "
-              << (M * 4) << "x" << (N * 4) << " -> "
-              << (L * 4) << "x" << (N * 4) << "]\n";
+    << " [" << (L * 4) << "x" << (M * 4) << " * "
+    << (M * 4) << "x" << (N * 4) << " -> "
+    << (L * 4) << "x" << (N * 4) << "]\n";
     std::cout << "Tile block size: NB=" << NB << " (" << (NB * 4) << "x" << (NB * 4) << " floats, "
-              << (NB * 16 * 4) << " bytes wide)\n\n";
+    << (NB * 16 * 4) << " bytes wide)\n\n";
 
     Matrix4D A(L, M);
     Matrix4D B(M, N);
