@@ -73,15 +73,15 @@ void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     for (int i = 0; i < L; ++i) {
         for (int j = 0; j < N; ++j) {
             for (int x = 0; x < 4; ++x) {
-                __m128 acc = _mm_setzero_ps();
                 for (int r = 0; r < M; ++r) {
+                    __m128 acc = _mm_load_ps(C.row_ptr(i, j, x));
                     for (int z = 0; z < 4; ++z) {
                         __m128 a_vec = _mm_set1_ps(A.at(i, r, x, z));
                         __m128 b_vec = _mm_load_ps(B.row_ptr(r, j, z));
                         acc = _mm_fmadd_ps(a_vec, b_vec, acc);
                     }
+                    _mm_store_ps(C.row_ptr(i, j, x), acc);
                 }
-                _mm_store_ps(C.row_ptr(i, j, x), acc);
             }
         }
     }
@@ -207,7 +207,7 @@ int main(int argc, char* argv[]) {
     int L = 1200;
     int M = 1200;
     int N = 1200;
-    int NB = 120;
+    int NB = 200;
 
     parse_dimensions(argc, argv, L, M, N, NB);
 
