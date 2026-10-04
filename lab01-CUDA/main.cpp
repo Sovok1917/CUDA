@@ -65,7 +65,6 @@ private:
 
 #pragma GCC push_options
 #pragma GCC optimize("no-tree-vectorize")
-__attribute__((noinline))
 void matmul_scalar(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const int L = A.rows();
     const int M = A.cols();
@@ -90,7 +89,6 @@ void matmul_scalar(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
 
 #pragma GCC push_options
 #pragma GCC optimize("tree-vectorize")
-__attribute__((noinline))
 void matmul_autovec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const int L = A.rows();
     const int M = A.cols();
@@ -118,7 +116,6 @@ void matmul_autovec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
 
 #pragma GCC push_options
 #pragma GCC optimize("no-tree-vectorize")
-__attribute__((noinline))
 void matmul_manvec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const int L = A.rows();
     const int M = A.cols();
@@ -200,8 +197,8 @@ int main(int argc, char* argv[]) {
     Matrix4D C1_on(L, N);
     Matrix4D C2(L, N);
 
-    A.randomize(42);
-    B.randomize(84);
+    A.randomize(1);
+    B.randomize(1);
 
     C1_off.zero();
     uint64_t c_start = __rdtsc();
@@ -237,17 +234,14 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Result C1 (Vectorization OFF):\n";
     std::cout << "  Time:   " << time_scalar << " ms (" << (time_scalar / 1000.0) << " s)\n";
-    std::cout << "  Cycles: " << cycles_scalar << "\n\n";
 
     std::cout << "Result C1 (Compiler vectorization):\n";
     std::cout << "  Time:   " << time_autovec << " ms (" << (time_autovec / 1000.0) << " s)\n";
-    std::cout << "  Cycles: " << cycles_autovec << "\n";
     std::cout << "  Speedup vs OFF: " << (time_scalar / time_autovec) << "x\n";
     std::cout << "  Verification:   " << (autovec_matches ? "PASSED" : "FAILED") << "\n\n";
 
     std::cout << "Result C2 (Manual vectorization):\n";
     std::cout << "  Time:   " << time_manvec << " ms (" << (time_manvec / 1000.0) << " s)\n";
-    std::cout << "  Cycles: " << cycles_manvec << "\n";
     std::cout << "  Speedup vs OFF:      " << (time_scalar / time_manvec) << "x\n";
     std::cout << "  Speedup vs Compiler: " << (time_autovec / time_manvec) << "x\n";
     std::cout << "  Verification:        " << (manvec_matches ? "PASSED" : "FAILED") << "\n\n";
