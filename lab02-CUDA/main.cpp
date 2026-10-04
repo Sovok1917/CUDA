@@ -244,11 +244,9 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Result C1 (Base):\n";
     std::cout << "  Time:   " << time_base << " ms (" << (time_base / 1000.0) << " s)\n";
-    std::cout << "  Cycles: " << cycles_base << "\n\n";
 
     std::cout << "Result C2 (Optimized):\n";
     std::cout << "  Time:   " << time_opt << " ms (" << (time_opt / 1000.0) << " s)\n";
-    std::cout << "  Cycles: " << cycles_opt << "\n";
     std::cout << "  Speedup vs Base: " << (time_base / time_opt) << "x\n";
     std::cout << "  Verification:    " << (matches ? "PASSED" : "FAILED") << "\n\n";
 

@@ -121,29 +121,18 @@ void matmul_manvec(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const int M = A.cols();
     const int N = B.cols();
 
-    __m256 a[2][4];
-    __m256 b[4];
-    __m256 c[2];
-
     for (int i = 0; i < L; ++i) {
-        for (int k = 0; k < M; ++k) {
-            for (int p = 0; p < 4; ++p) {
-                a[0][p] = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 1, p)), _mm_set1_ps(A.at(i, k, 0, p)));
-                a[1][p] = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 3, p)), _mm_set1_ps(A.at(i, k, 2, p)));
-            }
-
-            for (int j = 0; j < N; ++j) {
-                c[0] = _mm256_load_ps(C.row_ptr(i, j, 0));
-                c[1] = _mm256_load_ps(C.row_ptr(i, j, 2));
-
-                for (int p = 0; p < 4; ++p) {
-                    b[p] = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, p));
-                    c[0] = _mm256_fmadd_ps(a[0][p], b[p], c[0]);
-                    c[1] = _mm256_fmadd_ps(a[1][p], b[p], c[1]);
+        for (int j = 0; j < N; ++j) {
+            for (int x = 0; x < 4; ++x) {
+                for (int r = 0; r < M; ++r) {
+                    __m128 acc = _mm_load_ps(C.row_ptr(i, j, x));
+                    for (int z = 0; z < 4; ++z) {
+                        __m128 a_vec = _mm_set1_ps(A.at(i, r, x, z));
+                        __m128 b_vec = _mm_load_ps(B.row_ptr(r, j, z));
+                        acc = _mm_fmadd_ps(a_vec, b_vec, acc);
+                    }
+                    _mm_store_ps(C.row_ptr(i, j, x), acc);
                 }
-
-                _mm256_store_ps(C.row_ptr(i, j, 0), c[0]);
-                _mm256_store_ps(C.row_ptr(i, j, 2), c[1]);
             }
         }
     }
