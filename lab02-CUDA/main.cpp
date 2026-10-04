@@ -12,7 +12,7 @@
 class Matrix4D {
 public:
     Matrix4D(int outer_rows, int outer_cols)
-    : rows_(outer_rows), cols_(outer_cols) {
+        : rows_(outer_rows), cols_(outer_cols) {
         int total_floats = rows_ * cols_ * 16;
         data_ = static_cast<float*>(aligned_alloc(64, total_floats * sizeof(float)));
         zero();
@@ -102,28 +102,32 @@ void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB)
 
                 for (int i = ib; i < i_end; ++i) {
                     for (int k = kb; k < k_end; ++k) {
+                        const float* a_ptr = A.row_ptr(i, k, 0);
                         __m256 a01[4];
                         __m256 a23[4];
                         for (int p = 0; p < 4; ++p) {
-                            a01[p] = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 1, p)), _mm_set1_ps(A.at(i, k, 0, p)));
-                            a23[p] = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 3, p)), _mm_set1_ps(A.at(i, k, 2, p)));
+                            a01[p] = _mm256_set_m128(_mm_set1_ps(a_ptr[4 + p]), _mm_set1_ps(a_ptr[p]));
+                            a23[p] = _mm256_set_m128(_mm_set1_ps(a_ptr[12 + p]), _mm_set1_ps(a_ptr[8 + p]));
                         }
+
+                        const float* b_ptr = B.row_ptr(k, jb, 0);
+                        float* c_ptr = C.row_ptr(i, jb, 0);
 
                         int j = jb;
                         for (; j <= j_end - 2; j += 2) {
-                            const __m256 b0_0 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, 0));
-                            const __m256 b0_1 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j + 1, 0));
-                            const __m256 b1_0 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, 1));
-                            const __m256 b1_1 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j + 1, 1));
-                            const __m256 b2_0 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, 2));
-                            const __m256 b2_1 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j + 1, 2));
-                            const __m256 b3_0 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, 3));
-                            const __m256 b3_1 = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j + 1, 3));
+                            const __m256 b0_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 0));
+                            const __m256 b0_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 16));
+                            const __m256 b1_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 4));
+                            const __m256 b1_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 20));
+                            const __m256 b2_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 8));
+                            const __m256 b2_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 24));
+                            const __m256 b3_0 = _mm256_broadcast_ps((const __m128*)(b_ptr + 12));
+                            const __m256 b3_1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 28));
 
-                            __m256 c01_0 = _mm256_load_ps(C.row_ptr(i, j, 0));
-                            __m256 c23_0 = _mm256_load_ps(C.row_ptr(i, j, 2));
-                            __m256 c01_1 = _mm256_load_ps(C.row_ptr(i, j + 1, 0));
-                            __m256 c23_1 = _mm256_load_ps(C.row_ptr(i, j + 1, 2));
+                            __m256 c01_0 = _mm256_load_ps(c_ptr + 0);
+                            __m256 c23_0 = _mm256_load_ps(c_ptr + 8);
+                            __m256 c01_1 = _mm256_load_ps(c_ptr + 16);
+                            __m256 c23_1 = _mm256_load_ps(c_ptr + 24);
 
                             c01_0 = _mm256_fmadd_ps(a01[0], b0_0, c01_0);
                             c23_0 = _mm256_fmadd_ps(a23[0], b0_0, c23_0);
@@ -145,24 +149,30 @@ void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB)
                             c01_1 = _mm256_fmadd_ps(a01[3], b3_1, c01_1);
                             c23_1 = _mm256_fmadd_ps(a23[3], b3_1, c23_1);
 
-                            _mm256_store_ps(C.row_ptr(i, j, 0), c01_0);
-                            _mm256_store_ps(C.row_ptr(i, j, 2), c23_0);
-                            _mm256_store_ps(C.row_ptr(i, j + 1, 0), c01_1);
-                            _mm256_store_ps(C.row_ptr(i, j + 1, 2), c23_1);
+                            _mm256_store_ps(c_ptr + 0, c01_0);
+                            _mm256_store_ps(c_ptr + 8, c23_0);
+                            _mm256_store_ps(c_ptr + 16, c01_1);
+                            _mm256_store_ps(c_ptr + 24, c23_1);
+
+                            b_ptr += 32;
+                            c_ptr += 32;
                         }
 
                         for (; j < j_end; ++j) {
-                            __m256 c01 = _mm256_load_ps(C.row_ptr(i, j, 0));
-                            __m256 c23 = _mm256_load_ps(C.row_ptr(i, j, 2));
+                            __m256 c01 = _mm256_load_ps(c_ptr + 0);
+                            __m256 c23 = _mm256_load_ps(c_ptr + 8);
 
                             for (int p = 0; p < 4; ++p) {
-                                const __m256 b_row = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, p));
+                                const __m256 b_row = _mm256_broadcast_ps((const __m128*)(b_ptr + p * 4));
                                 c01 = _mm256_fmadd_ps(a01[p], b_row, c01);
                                 c23 = _mm256_fmadd_ps(a23[p], b_row, c23);
                             }
 
-                            _mm256_store_ps(C.row_ptr(i, j, 0), c01);
-                            _mm256_store_ps(C.row_ptr(i, j, 2), c23);
+                            _mm256_store_ps(c_ptr + 0, c01);
+                            _mm256_store_ps(c_ptr + 8, c23);
+
+                            b_ptr += 16;
+                            c_ptr += 16;
                         }
                     }
                 }
@@ -213,11 +223,11 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Lab 02 (Cache Access Optimization)\n";
     std::cout << "Dimensions: L=" << L << ", M=" << M << ", N=" << N
-    << " [" << (L * 4) << "x" << (M * 4) << " * "
-    << (M * 4) << "x" << (N * 4) << " -> "
-    << (L * 4) << "x" << (N * 4) << "]\n";
+              << " [" << (L * 4) << "x" << (M * 4) << " * "
+              << (M * 4) << "x" << (N * 4) << " -> "
+              << (L * 4) << "x" << (N * 4) << "]\n";
     std::cout << "Tile block size: NB=" << NB << " (" << (NB * 4) << "x" << (NB * 4) << " floats, "
-    << (NB * 16 * 4) << " bytes wide)\n\n";
+              << (NB * 16 * 4) << " bytes wide)\n\n";
 
     Matrix4D A(L, M);
     Matrix4D B(M, N);
