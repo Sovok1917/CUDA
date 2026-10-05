@@ -64,7 +64,6 @@ private:
     float* data_;
 };
 
-__attribute__((noinline))
 void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const int L = A.rows();
     const int M = A.cols();
@@ -173,9 +172,7 @@ bool verify_matrices(const Matrix4D& mat1, const Matrix4D& mat2) {
         for (int j = 0; j < mat1.cols(); ++j) {
             for (int x = 0; x < 4; ++x) {
                 for (int y = 0; y < 4; ++y) {
-                    float diff = std::fabs(mat1.at(i, j, x, y) - mat2.at(i, j, x, y));
-                    float max_val = std::max(std::fabs(mat1.at(i, j, x, y)), std::fabs(mat2.at(i, j, x, y)));
-                    if (diff > 1e-2f && (max_val == 0.0f || diff > 1e-3f * max_val)) {
+                    if (mat1.at(i, j, x, y) != mat2.at(i, j, x, y)) {
                         return false;
                     }
                 }
