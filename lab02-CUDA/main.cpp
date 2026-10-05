@@ -86,7 +86,7 @@ void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     }
 }
 
-__attribute__((noinline))
+
 void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB) {
     const int L = A.rows();
     const int M = A.cols();
@@ -214,8 +214,8 @@ int main(int argc, char* argv[]) {
     Matrix4D C1(L, N);
     Matrix4D C2(L, N);
 
-    A.randomize(42);
-    B.randomize(84);
+    A.randomize(1);
+    B.randomize(2);
 
     C1.zero();
     uint64_t c_start = __rdtsc();
