@@ -87,6 +87,7 @@ void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
 }
 
 
+__attribute__((noinline))
 void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB) {
     const int L = A.rows();
     const int M = A.cols();
@@ -112,34 +113,7 @@ void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB)
                         const float* b_ptr = B.row_ptr(k, jb, 0);
                         float* c_ptr = C.row_ptr(i, jb, 0);
 
-                        int j = jb;
-                        for (; j <= j_end - 2; j += 2) {
-                            __m256 c01_0 = _mm256_load_ps(c_ptr + 0);
-                            __m256 c23_0 = _mm256_load_ps(c_ptr + 8);
-                            __m256 c01_1 = _mm256_load_ps(c_ptr + 16);
-                            __m256 c23_1 = _mm256_load_ps(c_ptr + 24);
-
-                            #pragma GCC unroll 4
-                            for (int p = 0; p < 4; ++p) {
-                                const __m256 b0 = _mm256_broadcast_ps((const __m128*)(b_ptr + p * 4));
-                                const __m256 b1 = _mm256_broadcast_ps((const __m128*)(b_ptr + 16 + p * 4));
-
-                                c01_0 = _mm256_fmadd_ps(a01[p], b0, c01_0);
-                                c23_0 = _mm256_fmadd_ps(a23[p], b0, c23_0);
-                                c01_1 = _mm256_fmadd_ps(a01[p], b1, c01_1);
-                                c23_1 = _mm256_fmadd_ps(a23[p], b1, c23_1);
-                            }
-
-                            _mm256_store_ps(c_ptr + 0, c01_0);
-                            _mm256_store_ps(c_ptr + 8, c23_0);
-                            _mm256_store_ps(c_ptr + 16, c01_1);
-                            _mm256_store_ps(c_ptr + 24, c23_1);
-
-                            b_ptr += 32;
-                            c_ptr += 32;
-                        }
-
-                        for (; j < j_end; ++j) {
+                        for (int j = jb; j < j_end; ++j) {
                             __m256 c01 = _mm256_load_ps(c_ptr + 0);
                             __m256 c23 = _mm256_load_ps(c_ptr + 8);
 
@@ -197,7 +171,7 @@ int main(int argc, char* argv[]) {
     int L = 1200;
     int M = 1200;
     int N = 1200;
-    int NB = 200;
+    int NB = 200; //N-block, sets how many elements will divided blocks have
 
     parse_dimensions(argc, argv, L, M, N, NB);
 
