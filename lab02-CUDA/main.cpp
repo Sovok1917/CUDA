@@ -87,7 +87,6 @@ void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
 }
 
 
-__attribute__((noinline))
 void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB) {
     const int L = A.rows();
     const int M = A.cols();
@@ -192,22 +191,16 @@ int main(int argc, char* argv[]) {
     B.randomize(2);
 
     C1.zero();
-    uint64_t c_start = __rdtsc();
     auto t_start = std::chrono::high_resolution_clock::now();
     matmul_base(A, B, C1);
     auto t_end = std::chrono::high_resolution_clock::now();
-    uint64_t c_end = __rdtsc();
     const double time_base = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-    const uint64_t cycles_base = c_end - c_start;
 
     C2.zero();
-    c_start = __rdtsc();
     t_start = std::chrono::high_resolution_clock::now();
     matmul_optimized(A, B, C2, NB);
     t_end = std::chrono::high_resolution_clock::now();
-    c_end = __rdtsc();
     const double time_opt = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-    const uint64_t cycles_opt = c_end - c_start;
 
     const bool matches = verify_matrices(C1, C2);
 

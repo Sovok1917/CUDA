@@ -7,5 +7,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_compile_options(-O2 -mavx2 -mfma -g)
 
-add_subdirectory(lab01-CUDA)
+#add_subdirectory(lab01-CUDA)
 add_subdirectory(lab02-CUDA)
