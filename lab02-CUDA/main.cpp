@@ -70,8 +70,8 @@ void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
     const int N = B.cols();
 
     for (int j = 0; j < N; ++j) {
-        for (int i = 0; i < L; ++i) {
-            for (int k = 0; k < M; ++k) {
+        for (int k = 0; k < M; ++k) {
+            for (int i = 0; i < L; ++i) {
                 __m256 c01 = _mm256_load_ps(C.row_ptr(i, j, 0));
                 __m256 c23 = _mm256_load_ps(C.row_ptr(i, j, 2));
 
