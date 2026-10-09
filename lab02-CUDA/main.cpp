@@ -65,37 +65,31 @@ private:
 };
 
 void matmul_base(const Matrix4D& A, const Matrix4D& B, Matrix4D& C) {
-        const int L = A.rows();
-        const int M = A.cols();
-        const int N = B.cols();
+    const int L = A.rows();
+    const int M = A.cols();
+    const int N = B.cols();
 
-        __m256 a[2][4];
-        __m256 b[4];
-        __m256 c[2];
-
+    for (int j = 0; j < N; ++j) {
         for (int i = 0; i < L; ++i) {
             for (int k = 0; k < M; ++k) {
+                __m256 c01 = _mm256_load_ps(C.row_ptr(i, j, 0));
+                __m256 c23 = _mm256_load_ps(C.row_ptr(i, j, 2));
+
                 for (int p = 0; p < 4; ++p) {
-                    a[0][p] = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 1, p)), _mm_set1_ps(A.at(i, k, 0, p)));
-                    a[1][p] = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 3, p)), _mm_set1_ps(A.at(i, k, 2, p)));
+                    const __m256 a01 = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 1, p)), _mm_set1_ps(A.at(i, k, 0, p)));
+                    const __m256 a23 = _mm256_set_m128(_mm_set1_ps(A.at(i, k, 3, p)), _mm_set1_ps(A.at(i, k, 2, p)));
+                    const __m256 b_row = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, p));
+
+                    c01 = _mm256_fmadd_ps(a01, b_row, c01);
+                    c23 = _mm256_fmadd_ps(a23, b_row, c23);
                 }
 
-                for (int j = 0; j < N; ++j) {
-                    c[0] = _mm256_load_ps(C.row_ptr(i, j, 0));
-                    c[1] = _mm256_load_ps(C.row_ptr(i, j, 2));
-
-                    for (int p = 0; p < 4; ++p) {
-                        b[p] = _mm256_broadcast_ps((const __m128*)B.row_ptr(k, j, p));
-                        c[0] = _mm256_fmadd_ps(a[0][p], b[p], c[0]);
-                        c[1] = _mm256_fmadd_ps(a[1][p], b[p], c[1]);
-                    }
-
-                    _mm256_store_ps(C.row_ptr(i, j, 0), c[0]);
-                    _mm256_store_ps(C.row_ptr(i, j, 2), c[1]);
-                }
+                _mm256_store_ps(C.row_ptr(i, j, 0), c01);
+                _mm256_store_ps(C.row_ptr(i, j, 2), c23);
             }
         }
     }
+}
 
 void matmul_optimized(const Matrix4D& A, const Matrix4D& B, Matrix4D& C, int NB) {
     const int L = A.rows();
@@ -180,7 +174,7 @@ int main(int argc, char* argv[]) {
     int L = 1200;
     int M = 1200;
     int N = 1200;
-    int NB = 250; //N-block, sets how many elements will divided blocks have
+    int NB = 240; //N-block, sets how many elements will divided blocks have
 
     parse_dimensions(argc, argv, L, M, N, NB);
 
