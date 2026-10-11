@@ -7,6 +7,21 @@
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
+struct ComplexBounds {
+    float xmin;
+    float xmax;
+    float ymin;
+    float ymax;
+};
+
+__host__ __device__ inline cuComplex map_grid_to_complex(int col, int row, int W, int H, const ComplexBounds& b) {
+    float dx = (b.xmax - b.xmin) / static_cast<float>(W - 1);
+    float dy = (b.ymax - b.ymin) / static_cast<float>(H - 1);
+    float cx = b.xmin + static_cast<float>(col) * dx;
+    float cy = b.ymin + static_cast<float>(row) * dy;
+    return make_cuComplex(cx, cy);
+}
+
 __host__ __device__ inline int compute_mandelbrot_pixel(cuComplex c, int max_iter) {
     cuComplex z = make_cuComplex(0.0f, 0.0f);
     int iter = 0;
@@ -22,30 +37,21 @@ __host__ __device__ inline int compute_mandelbrot_pixel(cuComplex c, int max_ite
     return iter;
 }
 
-void mandelbrot_cpu(int* output, int W, int H, int max_iter, float xmin, float xmax, float ymin, float ymax) {
-    float dx = (xmax - xmin) / static_cast<float>(W - 1);
-    float dy = (ymax - ymin) / static_cast<float>(H - 1);
-
+void mandelbrot_cpu(int* output, int W, int H, int max_iter, ComplexBounds bounds) {
     for (int r = 0; r < H; ++r) {
-        float cy = ymin + static_cast<float>(r) * dy;
         for (int c = 0; c < W; ++c) {
-            float cx = xmin + static_cast<float>(c) * dx;
-            cuComplex pt = make_cuComplex(cx, cy);
+            cuComplex pt = map_grid_to_complex(c, r, W, H, bounds);
             output[r * W + c] = compute_mandelbrot_pixel(pt, max_iter);
         }
     }
 }
 
-__global__ void mandelbrot_kernel(int* output, int W, int H, int max_iter, float xmin, float xmax, float ymin, float ymax) {
+__global__ void mandelbrot_gpu(int* output, int W, int H, int max_iter, ComplexBounds bounds) {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     int r = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (c < W && r < H) {
-        float dx = (xmax - xmin) / static_cast<float>(W - 1);
-        float dy = (ymax - ymin) / static_cast<float>(H - 1);
-        float cx = xmin + static_cast<float>(c) * dx;
-        float cy = ymin + static_cast<float>(r) * dy;
-        cuComplex pt = make_cuComplex(cx, cy);
+        cuComplex pt = map_grid_to_complex(c, r, W, H, bounds);
         output[r * W + c] = compute_mandelbrot_pixel(pt, max_iter);
     }
 }
@@ -72,10 +78,7 @@ int main(int argc, char* argv[]) {
     int W = 2048;
     int H = 2048;
     int max_iter = 500;
-    float xmin = -2.0f;
-    float xmax = 2.0f;
-    float ymin = -2.0f;
-    float ymax = 2.0f;
+    ComplexBounds bounds = {-2.0f, 2.0f, -2.0f, 2.0f};
 
     parse_args(argc, argv, W, H, max_iter);
 
@@ -84,14 +87,15 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Lab 03\n";
     std::cout << "Grid: " << W << "x" << H << ", Max Iterations: " << max_iter << "\n";
-    std::cout << "Bounds: [" << xmin << ", " << xmax << "] x [" << ymin << ", " << ymax << "]\n\n";
+    std::cout << "Bounds: [" << bounds.xmin << ", " << bounds.xmax << "] x ["
+    << bounds.ymin << ", " << bounds.ymax << "]\n\n";
 
     int* h_cpu_output = static_cast<int*>(std::malloc(total_bytes));
     int* h_gpu_output = static_cast<int*>(std::malloc(total_bytes));
 
     unsigned long long tsc_start = __rdtsc();
     auto t_start = std::chrono::high_resolution_clock::now();
-    mandelbrot_cpu(h_cpu_output, W, H, max_iter, xmin, xmax, ymin, ymax);
+    mandelbrot_cpu(h_cpu_output, W, H, max_iter, bounds);
     auto t_end = std::chrono::high_resolution_clock::now();
     unsigned long long tsc_end = __rdtsc();
 
@@ -109,12 +113,13 @@ int main(int argc, char* argv[]) {
     cudaEventCreate(&stop_event);
 
     cudaEventRecord(start_event, 0);
-    mandelbrot_kernel<<<grid, block>>>(d_output, W, H, max_iter, xmin, xmax, ymin, ymax);
+    mandelbrot_gpu<<<grid, block>>>(d_output, W, H, max_iter, bounds);
     cudaEventRecord(stop_event, 0);
     cudaEventSynchronize(stop_event);
 
-    float time_gpu_ms = 0.0f;
-    cudaEventElapsedTime(&time_gpu_ms, start_event, stop_event);
+    float time_gpu_raw_ms = 0.0f;
+    cudaEventElapsedTime(&time_gpu_raw_ms, start_event, stop_event);
+    const double time_gpu_ms = static_cast<double>(time_gpu_raw_ms);
 
     cudaMemcpy(h_gpu_output, d_output, total_bytes, cudaMemcpyDeviceToHost);
 
@@ -127,7 +132,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Cycles: " << cycles_cpu << "\n\n";
 
     std::cout << "Result C2 (GPU):\n";
-    std::cout << "  Time:   " << time_gpu_ms << " ms (" << (time_gpu_ms / 1000.0f) << " s)\n";
+    std::cout << "  Time:   " << time_gpu_ms << " ms (" << (time_gpu_ms / 1000.0) << " s)\n";
     std::cout << "  Speedup vs CPU: " << (time_cpu_ms / time_gpu_ms) << "x\n";
     std::cout << "  Verification:   " << (matches ? "PASSED" : "FAILED") << "\n\n";
 
