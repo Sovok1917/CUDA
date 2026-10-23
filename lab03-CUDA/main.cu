@@ -91,10 +91,8 @@ int main(int argc, char* argv[]) {
     int total_bytes = total_elements * static_cast<int>(sizeof(int));
 
     std::cout << "Lab 03\n";
-    std::cout << "Grid: " << W << "x" << H << ", Max Iterations: " << max_iter << "\n";
-    std::cout << "Bounds: [" << bounds.xmin << ", " << bounds.xmax << "] x ["
-    << bounds.ymin << ", " << bounds.ymax << "]\n";
-    std::cout << "CUDA Block: " << block.x << "x" << block.y << ", Grid: " << grid.x << "x" << grid.y << "\n\n";
+    std::cout << "Threads: " << W << "x" << H << ", Max Iterations: " << max_iter << "\n";
+    std::cout << "Block: " << block.x << "x" << block.y << ", Grid: " << grid.x << "x" << grid.y << "\n\n";
 
     int* h_cpu_output = static_cast<int*>(std::malloc(total_bytes));
     int* h_gpu_output = static_cast<int*>(std::malloc(total_bytes));
