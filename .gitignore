@@ -34,3 +34,5 @@ vtune_results/
 .directory
 .Trash-*
 .nfs*
+
+theory/
