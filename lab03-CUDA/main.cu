@@ -37,15 +37,6 @@ __host__ __device__ inline int compute_mandelbrot_pixel(cuComplex c, int max_ite
     return iter;
 }
 
-void mandelbrot_cpu(int* output, int W, int H, int max_iter, ComplexBounds bounds) {
-    for (int r = 0; r < H; ++r) {
-        for (int c = 0; c < W; ++c) {
-            cuComplex pt = map_grid_to_complex(c, r, W, H, bounds);
-            output[r * W + c] = compute_mandelbrot_pixel(pt, max_iter);
-        }
-    }
-}
-
 __global__ void mandelbrot_gpu(int* output, int W, int H, int max_iter, ComplexBounds bounds) {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     int r = blockIdx.y * blockDim.y + threadIdx.y;
@@ -53,6 +44,15 @@ __global__ void mandelbrot_gpu(int* output, int W, int H, int max_iter, ComplexB
     if (c < W && r < H) {
         cuComplex pt = map_grid_to_complex(c, r, W, H, bounds);
         output[r * W + c] = compute_mandelbrot_pixel(pt, max_iter);
+    }
+}
+
+void mandelbrot_cpu(int* output, int W, int H, int max_iter, ComplexBounds bounds) {
+    for (int r = 0; r < H; ++r) {
+        for (int c = 0; c < W; ++c) {
+            cuComplex pt = map_grid_to_complex(c, r, W, H, bounds);
+            output[r * W + c] = compute_mandelbrot_pixel(pt, max_iter);
+        }
     }
 }
 
@@ -82,13 +82,19 @@ int main(int argc, char* argv[]) {
 
     parse_args(argc, argv, W, H, max_iter);
 
+    const int block_dim_x = 16;
+    const int block_dim_y = 16;
+    dim3 block(block_dim_x, block_dim_y);
+    dim3 grid((W + block.x - 1) / block.x, (H + block.y - 1) / block.y);
+
     int total_elements = W * H;
     int total_bytes = total_elements * static_cast<int>(sizeof(int));
 
     std::cout << "Lab 03\n";
     std::cout << "Grid: " << W << "x" << H << ", Max Iterations: " << max_iter << "\n";
     std::cout << "Bounds: [" << bounds.xmin << ", " << bounds.xmax << "] x ["
-    << bounds.ymin << ", " << bounds.ymax << "]\n\n";
+    << bounds.ymin << ", " << bounds.ymax << "]\n";
+    std::cout << "CUDA Block: " << block.x << "x" << block.y << ", Grid: " << grid.x << "x" << grid.y << "\n\n";
 
     int* h_cpu_output = static_cast<int*>(std::malloc(total_bytes));
     int* h_gpu_output = static_cast<int*>(std::malloc(total_bytes));
@@ -104,9 +110,6 @@ int main(int argc, char* argv[]) {
 
     int* d_output = nullptr;
     cudaMalloc(&d_output, total_bytes);
-
-    dim3 block(16, 16);
-    dim3 grid((W + block.x - 1) / block.x, (H + block.y - 1) / block.y);
 
     cudaEvent_t start_event, stop_event;
     cudaEventCreate(&start_event);
