@@ -174,7 +174,7 @@ int main(int argc, char* argv[]) {
     int L = 1200;
     int M = 1200;
     int N = 1200;
-    int NB = 240; //N-block, sets how many elements will divided blocks have
+    int NB = 240; //N-block for splitting the matrix for optimization, sets how many elements will divided blocks have
 
     parse_dimensions(argc, argv, L, M, N, NB);
 
