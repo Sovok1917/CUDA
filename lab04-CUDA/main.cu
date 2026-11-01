@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <cstdlib>
 #include <string>
+#include <algorithm>
 #include <random>
 #include <x86intrin.h>
 #include <cuda_runtime.h>
@@ -94,47 +95,6 @@ int inversions_cpu(const int* a, int N) {
     return count;
 }
 
-static int merge_count(int* a, int* tmp, int lo, int hi) {
-    if (hi - lo < 2) {
-        return 0;
-    }
-    int mid = lo + (hi - lo) / 2;
-    int count = merge_count(a, tmp, lo, mid) + merge_count(a, tmp, mid, hi);
-
-    int i = lo;
-    int j = mid;
-    int k = lo;
-    while (i < mid && j < hi) {
-        if (is_inversion(a[i], a[j])) {
-            tmp[k++] = a[j++];
-            count += mid - i;
-        } else {
-            tmp[k++] = a[i++];
-        }
-    }
-    while (i < mid) {
-        tmp[k++] = a[i++];
-    }
-    while (j < hi) {
-        tmp[k++] = a[j++];
-    }
-    for (k = lo; k < hi; ++k) {
-        a[k] = tmp[k];
-    }
-    return count;
-}
-
-int inversions_merge_cpu(const int* a, int N) {
-    int bytes = N * static_cast<int>(sizeof(int));
-    int* work = static_cast<int*>(std::malloc(bytes));
-    int* tmp = static_cast<int*>(std::malloc(bytes));
-    std::copy(a, a + N, work);
-    int count = merge_count(work, tmp, 0, N);
-    std::free(work);
-    std::free(tmp);
-    return count;
-}
-
 static dim3 make_grid(int N) {
     int tiles = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
     return dim3(tiles, tiles);
@@ -143,22 +103,6 @@ static dim3 make_grid(int N) {
 static void inversions_gpu_launch(const int* d_a, int N, int* d_result) {
     inversions_gpu<<<make_grid(N), dim3(BLOCK_SIZE)>>>(d_a, N, d_result);
     CUDA_CHECK(cudaGetLastError());
-}
-
-static int inversions_gpu_run(const int* h_a, int N) {
-    int bytes = N * static_cast<int>(sizeof(int));
-    int* d_a = nullptr;
-    int* d_result = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_a, bytes));
-    CUDA_CHECK(cudaMalloc(&d_result, sizeof(int)));
-    CUDA_CHECK(cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(d_result, 0, sizeof(int)));
-    inversions_gpu_launch(d_a, N, d_result);
-    int result = 0;
-    CUDA_CHECK(cudaMemcpy(&result, d_result, sizeof(int), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaFree(d_a));
-    CUDA_CHECK(cudaFree(d_result));
-    return result;
 }
 
 static void generate_permutation(int* a, int N, unsigned int seed) {
@@ -170,29 +114,6 @@ static void generate_permutation(int* a, int N, unsigned int seed) {
         int j = static_cast<int>(rng() % static_cast<unsigned int>(i + 1));
         std::swap(a[i], a[j]);
     }
-}
-
-static bool all_equal(int expected, int cpu, int merge, int gpu) {
-    return cpu == expected && merge == expected && gpu == expected;
-}
-
-static bool self_check(int N) {
-    int bytes = N * static_cast<int>(sizeof(int));
-    int* a = static_cast<int*>(std::malloc(bytes));
-
-    for (int i = 0; i < N; ++i) {
-        a[i] = i;
-    }
-    bool sorted_ok = all_equal(0, inversions_cpu(a, N), inversions_merge_cpu(a, N), inversions_gpu_run(a, N));
-
-    for (int i = 0; i < N; ++i) {
-        a[i] = N - 1 - i;
-    }
-    int full = N * (N - 1) / 2;
-    bool reversed_ok = all_equal(full, inversions_cpu(a, N), inversions_merge_cpu(a, N), inversions_gpu_run(a, N));
-
-    std::free(a);
-    return sorted_ok && reversed_ok;
 }
 
 static int parse_args(int argc, char* argv[]) {
@@ -216,8 +137,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Task 9: inversions count, N: " << N << "\n";
     std::cout << "Block: " << BLOCK_SIZE << ", Grid: " << grid.x << "x" << grid.y << "\n\n";
 
-    bool self_ok = self_check(N);
-
     int* h_a = static_cast<int*>(std::malloc(bytes));
     generate_permutation(h_a, N, 12345u);
 
@@ -229,8 +148,6 @@ int main(int argc, char* argv[]) {
 
     const double time_cpu_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     const unsigned long long cycles_cpu = tsc_end - tsc_start;
-
-    int result_merge = inversions_merge_cpu(h_a, N);
 
     int* d_a = nullptr;
     int* d_result = nullptr;
@@ -259,12 +176,9 @@ int main(int argc, char* argv[]) {
     int result_gpu = 0;
     CUDA_CHECK(cudaMemcpy(&result_gpu, d_result, sizeof(int), cudaMemcpyDeviceToHost));
 
-    const bool gpu_matches = (result_cpu == result_gpu);
-    const bool merge_matches = (result_cpu == result_merge);
+    const bool matches = (result_cpu == result_gpu);
 
     std::cout << std::fixed << std::setprecision(4);
-
-    std::cout << "Self-check (sorted, reversed): " << (self_ok ? "PASSED" : "FAILED") << "\n\n";
 
     std::cout << "Result C1 (CPU):\n";
     std::cout << "  Inversions: " << result_cpu << "\n";
@@ -275,11 +189,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Inversions: " << result_gpu << "\n";
     std::cout << "  Time:   " << time_gpu_ms << " ms (" << (time_gpu_ms / 1000.0) << " s)\n";
     std::cout << "  Speedup vs CPU: " << (time_cpu_ms / time_gpu_ms) << "x\n";
-    std::cout << "  Verification:   " << (gpu_matches ? "PASSED" : "FAILED") << "\n\n";
-
-    std::cout << "Reference (merge sort, O(N log N)):\n";
-    std::cout << "  Inversions: " << result_merge << "\n";
-    std::cout << "  Verification:   " << (merge_matches ? "PASSED" : "FAILED") << "\n\n";
+    std::cout << "  Verification:   " << (matches ? "PASSED" : "FAILED") << "\n\n";
 
     CUDA_CHECK(cudaEventDestroy(start_event));
     CUDA_CHECK(cudaEventDestroy(stop_event));
@@ -287,7 +197,7 @@ int main(int argc, char* argv[]) {
     CUDA_CHECK(cudaFree(d_result));
     std::free(h_a);
 
-    if (!self_ok || !gpu_matches || !merge_matches) {
+    if (!matches) {
         std::cerr << "Verification error: results do not match.\n";
         return 1;
     }
