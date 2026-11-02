@@ -8,21 +8,12 @@
 #include <x86intrin.h>
 #include <cuda_runtime.h>
 
-#define CUDA_CHECK(call) cuda_check((call), __LINE__)
-
 constexpr int BLOCK_SIZE = 256;
 constexpr int WARP_SIZE = 32;
 constexpr int WARPS_PER_BLOCK = BLOCK_SIZE / WARP_SIZE;
 constexpr int N_MIN = 100;
 constexpr int N_MAX = 10000;
 constexpr unsigned int FULL_MASK = 0xffffffffu;
-
-static void cuda_check(cudaError_t err, int line) {
-    if (err != cudaSuccess) {
-        std::cerr << "CUDA error at line " << line << ": " << cudaGetErrorString(err) << "\n";
-        std::exit(1);
-    }
-}
 
 __host__ __device__ inline int is_inversion(int left, int right) {
     return left > right;
@@ -45,11 +36,15 @@ __device__ inline int block_reduce_sum(int v, int* warp_sums) {
     }
     __syncthreads();
 
-    v = (threadIdx.x < WARPS_PER_BLOCK) ? warp_sums[threadIdx.x] : 0;
-    if (warp == 0) {
-        v = warp_reduce_sum(v);
+    int val = 0;
+    if (threadIdx.x < WARPS_PER_BLOCK) {
+        val = warp_sums[threadIdx.x];
     }
-    return v;
+
+    if (warp == 0) {
+        val = warp_reduce_sum(val);
+    }
+    return val;
 }
 
 __global__ void inversions_gpu(const int* a, int N, int* result) {
@@ -64,14 +59,30 @@ __global__ void inversions_gpu(const int* a, int N, int* result) {
     int j0 = blockIdx.y * BLOCK_SIZE;
     int j = j0 + threadIdx.x;
 
-    tile[threadIdx.x] = (j < N) ? a[j] : 0;
-    int ai = (i < N) ? a[i] : 0;
+    if (j < N) {
+        tile[threadIdx.x] = a[j];
+    } else {
+        tile[threadIdx.x] = 0;
+    }
+
+    int ai = 0;
+    if (i < N) {
+        ai = a[i];
+    }
     __syncthreads();
 
-    int limit = (N - j0 < BLOCK_SIZE) ? (N - j0) : BLOCK_SIZE;
+    int limit = BLOCK_SIZE;
+    if (N - j0 < BLOCK_SIZE) {
+        limit = N - j0;
+    }
+
     int start = limit;
     if (i < N) {
-        start = (blockIdx.x == blockIdx.y) ? static_cast<int>(threadIdx.x) + 1 : 0;
+        if (blockIdx.x == blockIdx.y) {
+            start = threadIdx.x + 1;
+        } else {
+            start = 0;
+        }
     }
 
     int count = 0;
@@ -100,20 +111,12 @@ static dim3 make_grid(int N) {
     return dim3(tiles, tiles);
 }
 
-static void inversions_gpu_launch(const int* d_a, int N, int* d_result) {
-    inversions_gpu<<<make_grid(N), dim3(BLOCK_SIZE)>>>(d_a, N, d_result);
-    CUDA_CHECK(cudaGetLastError());
-}
-
 static void generate_permutation(int* a, int N, unsigned int seed) {
     std::mt19937 rng(seed);
     for (int i = 0; i < N; ++i) {
         a[i] = i;
     }
-    for (int i = N - 1; i > 0; --i) {
-        int j = static_cast<int>(rng() % static_cast<unsigned int>(i + 1));
-        std::swap(a[i], a[j]);
-    }
+    std::shuffle(a, a + N, rng);
 }
 
 static int parse_args(int argc, char* argv[]) {
@@ -151,30 +154,30 @@ int main(int argc, char* argv[]) {
 
     int* d_a = nullptr;
     int* d_result = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_a, bytes));
-    CUDA_CHECK(cudaMalloc(&d_result, sizeof(int)));
-    CUDA_CHECK(cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice));
+    cudaMalloc(&d_a, bytes);
+    cudaMalloc(&d_result, sizeof(int));
+    cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice);
 
-    CUDA_CHECK(cudaMemset(d_result, 0, sizeof(int)));
-    inversions_gpu_launch(d_a, N, d_result);
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemset(d_result, 0, sizeof(int)));
+    cudaMemset(d_result, 0, sizeof(int));
+    inversions_gpu<<<grid, BLOCK_SIZE>>>(d_a, N, d_result);
+    cudaDeviceSynchronize();
+    cudaMemset(d_result, 0, sizeof(int));
 
     cudaEvent_t start_event, stop_event;
-    CUDA_CHECK(cudaEventCreate(&start_event));
-    CUDA_CHECK(cudaEventCreate(&stop_event));
+    cudaEventCreate(&start_event);
+    cudaEventCreate(&stop_event);
 
-    CUDA_CHECK(cudaEventRecord(start_event, 0));
-    inversions_gpu_launch(d_a, N, d_result);
-    CUDA_CHECK(cudaEventRecord(stop_event, 0));
-    CUDA_CHECK(cudaEventSynchronize(stop_event));
+    cudaEventRecord(start_event, 0);
+    inversions_gpu<<<grid, BLOCK_SIZE>>>(d_a, N, d_result);
+    cudaEventRecord(stop_event, 0);
+    cudaEventSynchronize(stop_event);
 
     float time_gpu_raw_ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&time_gpu_raw_ms, start_event, stop_event));
+    cudaEventElapsedTime(&time_gpu_raw_ms, start_event, stop_event);
     const double time_gpu_ms = static_cast<double>(time_gpu_raw_ms);
 
     int result_gpu = 0;
-    CUDA_CHECK(cudaMemcpy(&result_gpu, d_result, sizeof(int), cudaMemcpyDeviceToHost));
+    cudaMemcpy(&result_gpu, d_result, sizeof(int), cudaMemcpyDeviceToHost);
 
     const bool matches = (result_cpu == result_gpu);
 
@@ -191,10 +194,10 @@ int main(int argc, char* argv[]) {
     std::cout << "  Speedup vs CPU: " << (time_cpu_ms / time_gpu_ms) << "x\n";
     std::cout << "  Verification:   " << (matches ? "PASSED" : "FAILED") << "\n\n";
 
-    CUDA_CHECK(cudaEventDestroy(start_event));
-    CUDA_CHECK(cudaEventDestroy(stop_event));
-    CUDA_CHECK(cudaFree(d_a));
-    CUDA_CHECK(cudaFree(d_result));
+    cudaEventDestroy(start_event);
+    cudaEventDestroy(stop_event);
+    cudaFree(d_a);
+    cudaFree(d_result);
     std::free(h_a);
 
     if (!matches) {
