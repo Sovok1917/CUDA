@@ -374,14 +374,16 @@ static bool measure(const char* name, int W, int H, const Layout& layout,
     });
 
     double gpu_ms = time_gpu_ms(launch);
+    double speedup = gpu_ms > 0.0 ? cpu_ms / gpu_ms : 0.0;
 
     check(cudaMemcpy(h_out.data(), d_out, bytes, cudaMemcpyDeviceToHost));
     bool match = matches(reference, h_out, W, H, layout);
 
     std::cout << name << ": CPU " << cpu_ms << " ms, GPU " << gpu_ms << " ms, "
+    << "speedup " << speedup << "x, "
     << (match ? "MATCH" : "MISMATCH") << "\n";
     return match;
-}
+                    }
 
 static bool run_gray(int W, int H, const GaussWeights& weights) {
     const int words_per_row = div_up(W, 4);
