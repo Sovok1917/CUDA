@@ -184,7 +184,7 @@ bool verify_and_print(const char* name, double cpu_ms, float gpu_ms,
     const bool match = max_diff <= MAX_ALLOWED_DIFF;
     const double speedup = gpu_ms > 0.0f ? cpu_ms / gpu_ms : 0.0;
     std::cout << name << ": CPU " << cpu_ms << " ms, GPU " << gpu_ms << " ms, speedup "
-    << speedup << "x, max diff " << max_diff << ", "
+    << speedup << "x, "
     << (match ? "MATCH" : "MISMATCH") << "\n";
     return match;
 }
