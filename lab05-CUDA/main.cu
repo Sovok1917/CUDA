@@ -149,8 +149,8 @@ std::vector<uint8_t> cpu_convolve(const std::vector<uint8_t>& src, int W, int H,
                 float sum = bias;
                 for (int dy = -R; dy <= R; ++dy) {
                     for (int dx = -R; dx <= R; ++dx) {
-                        int sx = std::clamp(x + dx, 0, W - 1);
-                        int sy = std::clamp(y + dy, 0, H - 1);
+                        int sx = std::min(std::max(x + dx, 0), W - 1);
+                        int sy = std::min(std::max(y + dy, 0), H - 1);
                         sum += weights[(dy + R) * K + (dx + R)] * src[(sy * W + sx) * C + c];
                     }
                 }
@@ -159,16 +159,16 @@ std::vector<uint8_t> cpu_convolve(const std::vector<uint8_t>& src, int W, int H,
         }
     }
     return dst;
-}
+    }
 
-double run_cpu_pipeline(const std::vector<uint8_t>& host_in, std::vector<uint8_t>& reference,
-                        int W, int H, int C,
-                        const std::vector<float>& gauss, const std::vector<float>& emboss) {
-    const auto cpu_start = std::chrono::high_resolution_clock::now();
-    const std::vector<uint8_t> blurred = cpu_convolve(host_in, W, H, C, GAUSS_RADIUS, gauss, 0.0f);
-    reference = cpu_convolve(blurred, W, H, C, EMBOSS_RADIUS, emboss, EMBOSS_BIAS);
-    const auto cpu_end = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
+    double run_cpu_pipeline(const std::vector<uint8_t>& host_in, std::vector<uint8_t>& reference,
+                            int W, int H, int C,
+                            const std::vector<float>& gauss, const std::vector<float>& emboss) {
+        const auto cpu_start = std::chrono::high_resolution_clock::now();
+        const std::vector<uint8_t> blurred = cpu_convolve(host_in, W, H, C, GAUSS_RADIUS, gauss, 0.0f);
+        reference = cpu_convolve(blurred, W, H, C, EMBOSS_RADIUS, emboss, EMBOSS_BIAS);
+        const auto cpu_end = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
 }
 
 bool verify_and_print(const char* name, double cpu_ms, float gpu_ms,
