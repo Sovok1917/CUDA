@@ -77,7 +77,7 @@ __global__ void convolve_gray(const uint8_t* src, uint8_t* dst, int W, int H,
 }
 
 __global__ void convolve_rgb(const uchar3* src, uchar3* dst, int W, int H,
-                            int R, float bias, bool use_emboss) {
+                             int R, float bias, bool use_emboss) {
     const int K = 2 * R + 1;
     const int tile_size = BLOCK + 2 * R;
     __shared__ uchar3 tile[MAX_TILE][MAX_TILE];
@@ -115,7 +115,7 @@ __global__ void convolve_rgb(const uchar3* src, uchar3* dst, int W, int H,
 }
 
 void launch_convolve(const uint8_t* src, uint8_t* dst, int W, int H,
-                    int R, float bias, bool use_emboss) {
+                     int R, float bias, bool use_emboss) {
     const dim3 block(BLOCK, BLOCK);
     const dim3 grid((W + BLOCK - 1) / BLOCK, (H + BLOCK - 1) / BLOCK);
     convolve_gray<<<grid, block>>>(src, dst, W, H, R, bias, use_emboss);
@@ -123,7 +123,7 @@ void launch_convolve(const uint8_t* src, uint8_t* dst, int W, int H,
 }
 
 void launch_convolve(const uchar3* src, uchar3* dst, int W, int H,
-                        int R, float bias, bool use_emboss) {
+                     int R, float bias, bool use_emboss) {
     const dim3 block(BLOCK, BLOCK);
     const dim3 grid((W + BLOCK - 1) / BLOCK, (H + BLOCK - 1) / BLOCK);
     convolve_rgb<<<grid, block>>>(src, dst, W, H, R, bias, use_emboss);
@@ -166,11 +166,11 @@ std::vector<uint8_t> load_rgb(const std::string& path, int& W, int& H) {
 }
 
 void save_png(const std::string& path, const std::vector<uint8_t>& pixels,
-            int W, int H, int channels) {
+              int W, int H, int channels) {
     if (!stbi_write_png(path.c_str(), W, H, channels, pixels.data(), W * channels)) {
         std::cerr << "Cannot write image: " << path << "\n";
         std::exit(1);
-}
+    }
 }
 
 std::vector<uint8_t> to_gray(const std::vector<uint8_t>& rgb) {
@@ -183,7 +183,7 @@ std::vector<uint8_t> to_gray(const std::vector<uint8_t>& rgb) {
 }
 
 std::vector<uint8_t> cpu_convolve(const std::vector<uint8_t>& src, int W, int H, int C,
-                                    int R, const std::vector<float>& weights, float bias) {
+                                  int R, const std::vector<float>& weights, float bias) {
     const int K = 2 * R + 1;
     std::vector<uint8_t> dst(src.size());
     for (int y = 0; y < H; ++y) {
@@ -206,8 +206,8 @@ std::vector<uint8_t> cpu_convolve(const std::vector<uint8_t>& src, int W, int H,
 
 template <typename T>
 bool run(const std::vector<uint8_t>& host_in, int W, int H, int channels, const char* name,
-        const std::string& output_path, const std::vector<float>& gauss,
-        const std::vector<float>& emboss) {
+         const std::string& output_base, const std::vector<float>& gauss,
+         const std::vector<float>& emboss) {
     const auto cpu_start = std::chrono::high_resolution_clock::now();
     const std::vector<uint8_t> blurred = cpu_convolve(host_in, W, H, channels, GAUSS_RADIUS, gauss, 0.0f);
     const std::vector<uint8_t> reference = cpu_convolve(blurred, W, H, channels, EMBOSS_RADIUS, emboss, EMBOSS_BIAS);
@@ -240,13 +240,18 @@ bool run(const std::vector<uint8_t>& host_in, int W, int H, int channels, const 
     check(cudaEventDestroy(start));
     check(cudaEventDestroy(stop));
 
+    std::vector<uint8_t> host_mid(bytes);
     std::vector<uint8_t> host_out(bytes);
+    check(cudaMemcpy(host_mid.data(), d_tmp, bytes, cudaMemcpyDeviceToHost));
     check(cudaMemcpy(host_out.data(), d_out, bytes, cudaMemcpyDeviceToHost));
     check(cudaFree(d_in));
     check(cudaFree(d_tmp));
     check(cudaFree(d_out));
 
-    save_png(output_path, host_out, W, H, channels);
+    const std::string gauss_path = output_base + "_gauss.png";
+    const std::string emboss_path = output_base + "_emboss.png";
+    save_png(gauss_path, host_mid, W, H, channels);
+    save_png(emboss_path, host_out, W, H, channels);
 
     int max_diff = 0;
     for (size_t i = 0; i < bytes; ++i) {
@@ -255,69 +260,71 @@ bool run(const std::vector<uint8_t>& host_in, int W, int H, int channels, const 
     const bool match = max_diff <= MAX_ALLOWED_DIFF;
     const double speedup = gpu_ms > 0.0f ? cpu_ms / gpu_ms : 0.0;
     std::cout << name << ": CPU " << cpu_ms << " ms, GPU " << gpu_ms << " ms, speedup "
-    << speedup << "x, max diff " << max_diff << ", "
-    << (match ? "MATCH" : "MISMATCH") << " -> " << output_path << "\n";
+              << speedup << "x, max diff " << max_diff << ", "
+              << (match ? "MATCH" : "MISMATCH") << "\n";
+    std::cout << "  -> " << gauss_path << "\n";
+    std::cout << "  -> " << emboss_path << "\n";
     return match;
+}
+
+bool is_image(const std::filesystem::path& path) {
+    std::string ext = path.extension().string();
+    for (char& c : ext) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".tga";
+}
+
+bool process_image(const std::filesystem::path& path, const std::vector<float>& gauss,
+                   const std::vector<float>& emboss) {
+    const std::string input_path = path.string();
+    const std::string stem = path.stem().string();
+
+    int W = 0;
+    int H = 0;
+    const std::vector<uint8_t> color_in = load_rgb(input_path, W, H);
+    if (W < DIM_MIN || W > DIM_MAX || H < DIM_MIN || H > DIM_MAX) {
+        std::cerr << "Skipping " << input_path << ": W and H must be in ["
+                  << DIM_MIN << ", " << DIM_MAX << "]\n";
+        return false;
+    }
+    const std::vector<uint8_t> gray_in = to_gray(color_in);
+
+    std::cout << "Image: " << input_path << " (" << W << "x" << H << ")\n";
+    const bool gray_ok = run<uint8_t>(gray_in, W, H, 1, "Gray ",
+                                      OUTPUT_DIR + "/" + stem + "_gray", gauss, emboss);
+    const bool color_ok = run<uchar3>(color_in, W, H, 3, "Color",
+                                      OUTPUT_DIR + "/" + stem + "_color", gauss, emboss);
+    std::cout << "\n";
+    return gray_ok && color_ok;
+}
+
+int main() {
+    std::vector<std::filesystem::path> inputs;
+    for (const auto& entry : std::filesystem::directory_iterator(INPUT_DIR)) {
+        if (entry.is_regular_file() && is_image(entry.path())) {
+            inputs.push_back(entry.path());
         }
+    }
+    if (inputs.empty()) {
+        std::cerr << "No images found in " << INPUT_DIR << "\n";
+        return 1;
+    }
+    std::sort(inputs.begin(), inputs.end());
+    std::filesystem::create_directories(OUTPUT_DIR);
 
-        bool is_image(const std::filesystem::path& path) {
-            std::string ext = path.extension().string();
-            for (char& c : ext) {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".tga";
-        }
+    const std::vector<float> gauss = make_gauss(GAUSS_SIGMA);
+    const std::vector<float> emboss = {-2, -1, 0, -1, 1, 1, 0, 1, 2};
+    check(cudaMemcpyToSymbol(c_gauss, gauss.data(), gauss.size() * sizeof(float)));
+    check(cudaMemcpyToSymbol(c_emboss, emboss.data(), emboss.size() * sizeof(float)));
 
-        bool process_image(const std::filesystem::path& path, const std::vector<float>& gauss,
-                            const std::vector<float>& emboss) {
-            const std::string input_path = path.string();
-            const std::string stem = path.stem().string();
+    std::cout << "Lab 05, task 9: Gaussian 5x5 (sigma=1.0) -> Emboss 3x3\n";
+    std::cout << "Found " << inputs.size() << " image(s)\n\n";
+    std::cout << std::fixed << std::setprecision(2);
 
-            int W = 0;
-            int H = 0;
-            const std::vector<uint8_t> color_in = load_rgb(input_path, W, H);
-            if (W < DIM_MIN || W > DIM_MAX || H < DIM_MIN || H > DIM_MAX) {
-                std::cerr << "Skipping " << input_path << ": W and H must be in ["
-                << DIM_MIN << ", " << DIM_MAX << "]\n";
-                return false;
-            }
-            const std::vector<uint8_t> gray_in = to_gray(color_in);
-
-            std::cout << "Image: " << input_path << " (" << W << "x" << H << ")\n";
-            const bool gray_ok = run<uint8_t>(gray_in, W, H, 1, "Gray ",
-                                            OUTPUT_DIR + "/" + stem + "_gray.png", gauss, emboss);
-            const bool color_ok = run<uchar3>(color_in, W, H, 3, "Color",
-                                            OUTPUT_DIR + "/" + stem + "_color.png", gauss, emboss);
-            std::cout << "\n";
-            return gray_ok && color_ok;
-                            }
-
-                            int main() {
-                                std::vector<std::filesystem::path> inputs;
-                                for (const auto& entry : std::filesystem::directory_iterator(INPUT_DIR)) {
-                                    if (entry.is_regular_file() && is_image(entry.path())) {
-                                        inputs.push_back(entry.path());
-                                    }
-                                }
-                                if (inputs.empty()) {
-                                    std::cerr << "No images found in " << INPUT_DIR << "\n";
-                                    return 1;
-                                }
-                                std::sort(inputs.begin(), inputs.end());
-                                std::filesystem::create_directories(OUTPUT_DIR);
-
-                                const std::vector<float> gauss = make_gauss(GAUSS_SIGMA);
-                                const std::vector<float> emboss = {-2, -1, 0, -1, 1, 1, 0, 1, 2};
-                                check(cudaMemcpyToSymbol(c_gauss, gauss.data(), gauss.size() * sizeof(float)));
-                                check(cudaMemcpyToSymbol(c_emboss, emboss.data(), emboss.size() * sizeof(float)));
-
-                                std::cout << "Lab 05, task 9: Gaussian 5x5 (sigma=1.0) -> Emboss 3x3\n";
-                                std::cout << "Found " << inputs.size() << " image(s)\n\n";
-                                std::cout << std::fixed << std::setprecision(2);
-
-                                bool all_ok = true;
-                                for (const auto& path : inputs) {
-                                    all_ok = process_image(path, gauss, emboss) && all_ok;
-                                }
-                                return all_ok ? 0 : 1;
-                            }
+    bool all_ok = true;
+    for (const auto& path : inputs) {
+        all_ok = process_image(path, gauss, emboss) && all_ok;
+    }
+    return all_ok ? 0 : 1;
+}
