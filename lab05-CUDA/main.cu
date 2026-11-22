@@ -76,11 +76,11 @@ __global__ void convolve_gray(const uint8_t* src, uint8_t* dst, int W, int H,
     dst[y * W + x] = to_u8(sum);
 }
 
-__global__ void convolve_rgb(const uchar3* src, uchar3* dst, int W, int H,
-                             int R, float bias, bool use_emboss) {
+__global__ void convolve_rgba(const uint32_t* src, uint32_t* dst, int W, int H,
+                              int R, float bias, bool use_emboss) {
     const int K = 2 * R + 1;
     const int tile_size = BLOCK + 2 * R;
-    __shared__ uchar3 tile[MAX_TILE][MAX_TILE];
+    __shared__ uint32_t tile[MAX_TILE][MAX_TILE];
 
     for (int ty = threadIdx.y; ty < tile_size; ty += BLOCK) {
         for (int tx = threadIdx.x; tx < tile_size; tx += BLOCK) {
@@ -105,13 +105,13 @@ __global__ void convolve_rgb(const uchar3* src, uchar3* dst, int W, int H,
     for (int dy = 0; dy < K; ++dy) {
         for (int dx = 0; dx < K; ++dx) {
             float w = use_emboss ? c_emboss[dy * K + dx] : c_gauss[dy * K + dx];
-            uchar3 p = tile[threadIdx.y + dy][threadIdx.x + dx];
-            r += w * p.x;
-            g += w * p.y;
-            b += w * p.z;
+            uint32_t p = tile[threadIdx.y + dy][threadIdx.x + dx];
+            r += w * (p & 0xFFu);
+            g += w * ((p >> 8) & 0xFFu);
+            b += w * ((p >> 16) & 0xFFu);
         }
     }
-    dst[y * W + x] = make_uchar3(to_u8(r), to_u8(g), to_u8(b));
+    dst[y * W + x] = to_u8(r) | (to_u8(g) << 8) | (to_u8(b) << 16) | 0xFF000000u;
 }
 
 void launch_convolve(const uint8_t* src, uint8_t* dst, int W, int H,
@@ -122,11 +122,11 @@ void launch_convolve(const uint8_t* src, uint8_t* dst, int W, int H,
     check(cudaGetLastError());
 }
 
-void launch_convolve(const uchar3* src, uchar3* dst, int W, int H,
+void launch_convolve(const uint32_t* src, uint32_t* dst, int W, int H,
                      int R, float bias, bool use_emboss) {
     const dim3 block(BLOCK, BLOCK);
     const dim3 grid((W + BLOCK - 1) / BLOCK, (H + BLOCK - 1) / BLOCK);
-    convolve_rgb<<<grid, block>>>(src, dst, W, H, R, bias, use_emboss);
+    convolve_rgba<<<grid, block>>>(src, dst, W, H, R, bias, use_emboss);
     check(cudaGetLastError());
 }
 
@@ -153,14 +153,14 @@ std::vector<float> make_gauss(float sigma) {
     return w;
 }
 
-std::vector<uint8_t> load_rgb(const std::string& path, int& W, int& H) {
+std::vector<uint8_t> load_image(const std::string& path, int& W, int& H, int channels) {
     int file_channels = 0;
-    unsigned char* data = stbi_load(path.c_str(), &W, &H, &file_channels, 3);
+    unsigned char* data = stbi_load(path.c_str(), &W, &H, &file_channels, channels);
     if (!data) {
         std::cerr << "Cannot load image: " << path << "\n";
         std::exit(1);
     }
-    std::vector<uint8_t> pixels(data, data + static_cast<size_t>(W) * H * 3);
+    std::vector<uint8_t> pixels(data, data + static_cast<size_t>(W) * H * channels);
     stbi_image_free(data);
     return pixels;
 }
@@ -171,15 +171,6 @@ void save_png(const std::string& path, const std::vector<uint8_t>& pixels,
         std::cerr << "Cannot write image: " << path << "\n";
         std::exit(1);
     }
-}
-
-std::vector<uint8_t> to_gray(const std::vector<uint8_t>& rgb) {
-    std::vector<uint8_t> gray(rgb.size() / 3);
-    for (size_t i = 0; i < gray.size(); ++i) {
-        float v = 0.299f * rgb[3 * i] + 0.587f * rgb[3 * i + 1] + 0.114f * rgb[3 * i + 2];
-        gray[i] = to_u8(v);
-    }
-    return gray;
 }
 
 std::vector<uint8_t> cpu_convolve(const std::vector<uint8_t>& src, int W, int H, int C,
@@ -282,19 +273,22 @@ bool process_image(const std::filesystem::path& path, const std::vector<float>& 
 
     int W = 0;
     int H = 0;
-    const std::vector<uint8_t> color_in = load_rgb(input_path, W, H);
+    const std::vector<uint8_t> color_in = load_image(input_path, W, H, 4);
     if (W < DIM_MIN || W > DIM_MAX || H < DIM_MIN || H > DIM_MAX) {
         std::cerr << "Skipping " << input_path << ": W and H must be in ["
                   << DIM_MIN << ", " << DIM_MAX << "]\n";
         return false;
     }
-    const std::vector<uint8_t> gray_in = to_gray(color_in);
+
+    int gray_W = 0;
+    int gray_H = 0;
+    const std::vector<uint8_t> gray_in = load_image(input_path, gray_W, gray_H, 1);
 
     std::cout << "Image: " << input_path << " (" << W << "x" << H << ")\n";
     const bool gray_ok = run<uint8_t>(gray_in, W, H, 1, "Gray ",
                                       OUTPUT_DIR + "/" + stem + "_gray", gauss, emboss);
-    const bool color_ok = run<uchar3>(color_in, W, H, 3, "Color",
-                                      OUTPUT_DIR + "/" + stem + "_color", gauss, emboss);
+    const bool color_ok = run<uint32_t>(color_in, W, H, 4, "Color",
+                                        OUTPUT_DIR + "/" + stem + "_color", gauss, emboss);
     std::cout << "\n";
     return gray_ok && color_ok;
 }
