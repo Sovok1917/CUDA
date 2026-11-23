@@ -31,6 +31,13 @@ const std::string OUTPUT_DIR = "images/output";
 __constant__ float c_gauss[25];
 __constant__ float c_emboss[9];
 
+struct Image {
+    int W = 0;
+    int H = 0;
+    int channels = 0;
+    std::vector<uint8_t> pixels;
+};
+
 void check(cudaError_t status) {
     if (status != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(status) << "\n";
@@ -51,10 +58,8 @@ __global__ void convolve_gray(const uint8_t* src, uint8_t* dst, int W, int H,
 
     for (int ty = threadIdx.y; ty < tile_size; ty += BLOCK) {
         for (int tx = threadIdx.x; tx < tile_size; tx += BLOCK) {
-            int raw_x = static_cast<int>(blockIdx.x) * BLOCK + tx - R;
-            int raw_y = static_cast<int>(blockIdx.y) * BLOCK + ty - R;
-            int gx = min(max(raw_x, 0), W - 1);
-            int gy = min(max(raw_y, 0), H - 1);
+            int gx = min(max(static_cast<int>(blockIdx.x) * BLOCK + tx - R, 0), W - 1);
+            int gy = min(max(static_cast<int>(blockIdx.y) * BLOCK + ty - R, 0), H - 1);
             tile[ty][tx] = src[gy * W + gx];
         }
     }
@@ -76,18 +81,18 @@ __global__ void convolve_gray(const uint8_t* src, uint8_t* dst, int W, int H,
     dst[y * W + x] = to_u8(sum);
 }
 
-__global__ void convolve_rgba(const uint32_t* src, uint32_t* dst, int W, int H,
+__global__ void convolve_rgba(const uint8_t* src_bytes, uint8_t* dst_bytes, int W, int H,
                               int R, float bias, bool use_emboss) {
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(src_bytes);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(dst_bytes);
     const int K = 2 * R + 1;
     const int tile_size = BLOCK + 2 * R;
     __shared__ uint32_t tile[MAX_TILE][MAX_TILE];
 
     for (int ty = threadIdx.y; ty < tile_size; ty += BLOCK) {
         for (int tx = threadIdx.x; tx < tile_size; tx += BLOCK) {
-            int raw_x = static_cast<int>(blockIdx.x) * BLOCK + tx - R;
-            int raw_y = static_cast<int>(blockIdx.y) * BLOCK + ty - R;
-            int gx = min(max(raw_x, 0), W - 1);
-            int gy = min(max(raw_y, 0), H - 1);
+            int gx = min(max(static_cast<int>(blockIdx.x) * BLOCK + tx - R, 0), W - 1);
+            int gy = min(max(static_cast<int>(blockIdx.y) * BLOCK + ty - R, 0), H - 1);
             tile[ty][tx] = src[gy * W + gx];
         }
     }
@@ -111,29 +116,25 @@ __global__ void convolve_rgba(const uint32_t* src, uint32_t* dst, int W, int H,
             b += w * ((p >> 16) & 0xFFu);
         }
     }
-    dst[y * W + x] = to_u8(r) | (to_u8(g) << 8) | (to_u8(b) << 16) | 0xFF000000u;
+    const uint32_t alpha = tile[threadIdx.y + R][threadIdx.x + R] & 0xFF000000u;
+    dst[y * W + x] = to_u8(r) | (to_u8(g) << 8) | (to_u8(b) << 16) | alpha;
 }
 
-void launch_convolve(const uint8_t* src, uint8_t* dst, int W, int H,
-                     int R, float bias, bool use_emboss) {
+void convolve(const Image& img, const uint8_t* src, uint8_t* dst,
+              int R, float bias, bool use_emboss) {
     const dim3 block(BLOCK, BLOCK);
-    const dim3 grid((W + BLOCK - 1) / BLOCK, (H + BLOCK - 1) / BLOCK);
-    convolve_gray<<<grid, block>>>(src, dst, W, H, R, bias, use_emboss);
+    const dim3 grid((img.W + BLOCK - 1) / BLOCK, (img.H + BLOCK - 1) / BLOCK);
+    if (img.channels == 4) {
+        convolve_rgba<<<grid, block>>>(src, dst, img.W, img.H, R, bias, use_emboss);
+    } else {
+        convolve_gray<<<grid, block>>>(src, dst, img.W, img.H, R, bias, use_emboss);
+    }
     check(cudaGetLastError());
 }
 
-void launch_convolve(const uint32_t* src, uint32_t* dst, int W, int H,
-                     int R, float bias, bool use_emboss) {
-    const dim3 block(BLOCK, BLOCK);
-    const dim3 grid((W + BLOCK - 1) / BLOCK, (H + BLOCK - 1) / BLOCK);
-    convolve_rgba<<<grid, block>>>(src, dst, W, H, R, bias, use_emboss);
-    check(cudaGetLastError());
-}
-
-template <typename T>
-void gpu_pipeline(const T* in, T* tmp, T* out, int W, int H) {
-    launch_convolve(in, tmp, W, H, GAUSS_RADIUS, 0.0f, false);
-    launch_convolve(tmp, out, W, H, EMBOSS_RADIUS, EMBOSS_BIAS, true);
+void gpu_pipeline(const Image& img, uint8_t* in, uint8_t* tmp, uint8_t* out) {
+    convolve(img, in, tmp, GAUSS_RADIUS, 0.0f, false);
+    convolve(img, tmp, out, EMBOSS_RADIUS, EMBOSS_BIAS, true);
 }
 
 std::vector<float> make_gauss(float sigma) {
@@ -153,68 +154,73 @@ std::vector<float> make_gauss(float sigma) {
     return w;
 }
 
-std::vector<uint8_t> load_image(const std::string& path, int& W, int& H, int channels) {
+Image load_image(const std::string& path, int channels) {
+    Image img;
+    img.channels = channels;
     int file_channels = 0;
-    unsigned char* data = stbi_load(path.c_str(), &W, &H, &file_channels, channels);
+    unsigned char* data = stbi_load(path.c_str(), &img.W, &img.H, &file_channels, channels);
     if (!data) {
         std::cerr << "Cannot load image: " << path << "\n";
         std::exit(1);
     }
-    std::vector<uint8_t> pixels(data, data + static_cast<size_t>(W) * H * channels);
+    img.pixels.assign(data, data + static_cast<size_t>(img.W) * img.H * channels);
     stbi_image_free(data);
-    return pixels;
+    return img;
 }
 
-void save_png(const std::string& path, const std::vector<uint8_t>& pixels,
-              int W, int H, int channels) {
-    if (!stbi_write_png(path.c_str(), W, H, channels, pixels.data(), W * channels)) {
+void save_png(const std::string& path, const Image& img, const std::vector<uint8_t>& pixels) {
+    if (!stbi_write_png(path.c_str(), img.W, img.H, img.channels, pixels.data(), img.W * img.channels)) {
         std::cerr << "Cannot write image: " << path << "\n";
         std::exit(1);
     }
 }
 
-std::vector<uint8_t> cpu_convolve(const std::vector<uint8_t>& src, int W, int H, int C,
-                                  int R, const std::vector<float>& weights, float bias) {
+std::vector<uint8_t> cpu_convolve(const Image& img, const std::vector<uint8_t>& src,
+                                  const std::vector<float>& weights, int R, float bias) {
     const int K = 2 * R + 1;
+    const int C = img.channels;
+    const int color_channels = std::min(C, 3);
     std::vector<uint8_t> dst(src.size());
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            for (int c = 0; c < C; ++c) {
+    for (int y = 0; y < img.H; ++y) {
+        for (int x = 0; x < img.W; ++x) {
+            const size_t base = static_cast<size_t>(y * img.W + x) * C;
+            for (int c = 0; c < color_channels; ++c) {
                 float sum = bias;
                 for (int dy = -R; dy <= R; ++dy) {
                     for (int dx = -R; dx <= R; ++dx) {
-                        int sx = std::min(std::max(x + dx, 0), W - 1);
-                        int sy = std::min(std::max(y + dy, 0), H - 1);
-                        sum += weights[(dy + R) * K + (dx + R)] * src[(sy * W + sx) * C + c];
+                        int sx = std::min(std::max(x + dx, 0), img.W - 1);
+                        int sy = std::min(std::max(y + dy, 0), img.H - 1);
+                        sum += weights[(dy + R) * K + (dx + R)] * src[(sy * img.W + sx) * C + c];
                     }
                 }
-                dst[(y * W + x) * C + c] = to_u8(sum);
+                dst[base + c] = to_u8(sum);
+            }
+            if (C == 4) {
+                dst[base + 3] = src[base + 3];
             }
         }
     }
     return dst;
 }
 
-template <typename T>
-bool run(const std::vector<uint8_t>& host_in, int W, int H, int channels, const char* name,
-         const std::string& output_base, const std::vector<float>& gauss,
-         const std::vector<float>& emboss) {
+bool run(const Image& img, const char* name, const std::string& output_base,
+         const std::vector<float>& gauss, const std::vector<float>& emboss) {
     const auto cpu_start = std::chrono::high_resolution_clock::now();
-    const std::vector<uint8_t> blurred = cpu_convolve(host_in, W, H, channels, GAUSS_RADIUS, gauss, 0.0f);
-    const std::vector<uint8_t> reference = cpu_convolve(blurred, W, H, channels, EMBOSS_RADIUS, emboss, EMBOSS_BIAS);
+    const std::vector<uint8_t> blurred = cpu_convolve(img, img.pixels, gauss, GAUSS_RADIUS, 0.0f);
+    const std::vector<uint8_t> reference = cpu_convolve(img, blurred, emboss, EMBOSS_RADIUS, EMBOSS_BIAS);
     const auto cpu_end = std::chrono::high_resolution_clock::now();
     const double cpu_ms = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
 
-    const size_t bytes = host_in.size();
-    T* d_in;
-    T* d_tmp;
-    T* d_out;
+    const size_t bytes = img.pixels.size();
+    uint8_t* d_in;
+    uint8_t* d_tmp;
+    uint8_t* d_out;
     check(cudaMalloc(&d_in, bytes));
     check(cudaMalloc(&d_tmp, bytes));
     check(cudaMalloc(&d_out, bytes));
-    check(cudaMemcpy(d_in, host_in.data(), bytes, cudaMemcpyHostToDevice));
+    check(cudaMemcpy(d_in, img.pixels.data(), bytes, cudaMemcpyHostToDevice));
 
-    gpu_pipeline(d_in, d_tmp, d_out, W, H);
+    gpu_pipeline(img, d_in, d_tmp, d_out);
     check(cudaDeviceSynchronize());
 
     cudaEvent_t start;
@@ -222,7 +228,7 @@ bool run(const std::vector<uint8_t>& host_in, int W, int H, int channels, const 
     check(cudaEventCreate(&start));
     check(cudaEventCreate(&stop));
     check(cudaEventRecord(start));
-    gpu_pipeline(d_in, d_tmp, d_out, W, H);
+    gpu_pipeline(img, d_in, d_tmp, d_out);
     check(cudaEventRecord(stop));
     check(cudaEventSynchronize(stop));
 
@@ -241,8 +247,8 @@ bool run(const std::vector<uint8_t>& host_in, int W, int H, int channels, const 
 
     const std::string gauss_path = output_base + "_gauss.png";
     const std::string emboss_path = output_base + "_emboss.png";
-    save_png(gauss_path, host_mid, W, H, channels);
-    save_png(emboss_path, host_out, W, H, channels);
+    save_png(gauss_path, img, host_mid);
+    save_png(emboss_path, img, host_out);
 
     int max_diff = 0;
     for (size_t i = 0; i < bytes; ++i) {
@@ -271,24 +277,17 @@ bool process_image(const std::filesystem::path& path, const std::vector<float>& 
     const std::string input_path = path.string();
     const std::string stem = path.stem().string();
 
-    int W = 0;
-    int H = 0;
-    const std::vector<uint8_t> color_in = load_image(input_path, W, H, 4);
-    if (W < DIM_MIN || W > DIM_MAX || H < DIM_MIN || H > DIM_MAX) {
+    const Image color = load_image(input_path, 4);
+    if (color.W < DIM_MIN || color.W > DIM_MAX || color.H < DIM_MIN || color.H > DIM_MAX) {
         std::cerr << "Skipping " << input_path << ": W and H must be in ["
                   << DIM_MIN << ", " << DIM_MAX << "]\n";
         return false;
     }
+    const Image gray = load_image(input_path, 1);
 
-    int gray_W = 0;
-    int gray_H = 0;
-    const std::vector<uint8_t> gray_in = load_image(input_path, gray_W, gray_H, 1);
-
-    std::cout << "Image: " << input_path << " (" << W << "x" << H << ")\n";
-    const bool gray_ok = run<uint8_t>(gray_in, W, H, 1, "Gray ",
-                                      OUTPUT_DIR + "/" + stem + "_gray", gauss, emboss);
-    const bool color_ok = run<uint32_t>(color_in, W, H, 4, "Color",
-                                        OUTPUT_DIR + "/" + stem + "_color", gauss, emboss);
+    std::cout << "Image: " << input_path << " (" << color.W << "x" << color.H << ")\n";
+    const bool gray_ok = run(gray, "Gray ", OUTPUT_DIR + "/" + stem + "_gray", gauss, emboss);
+    const bool color_ok = run(color, "Color", OUTPUT_DIR + "/" + stem + "_color", gauss, emboss);
     std::cout << "\n";
     return gray_ok && color_ok;
 }
