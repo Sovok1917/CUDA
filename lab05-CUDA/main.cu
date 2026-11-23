@@ -19,6 +19,7 @@
 constexpr int DIM_MIN = 10;
 constexpr int DIM_MAX = 8192;
 constexpr int BLOCK = 16;
+constexpr int THREADS = 256;
 constexpr int GAUSS_RADIUS = 2;
 constexpr int EMBOSS_RADIUS = 1;
 constexpr int MAX_TILE = BLOCK + 2 * GAUSS_RADIUS;
@@ -45,9 +46,32 @@ void check(cudaError_t status) {
     }
 }
 
+int blocks_for(int count) {
+    return (count + THREADS - 1) / THREADS;
+}
+
 __host__ __device__ inline uint8_t to_u8(float v) {
     int i = static_cast<int>(floorf(v + 0.5f));
     return static_cast<uint8_t>(i < 0 ? 0 : (i > 255 ? 255 : i));
+}
+
+__global__ void pack_rgb(const uint8_t* rgb, uint32_t* packed, int count) {
+    int i = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) {
+        return;
+    }
+    packed[i] = rgb[3 * i] | (rgb[3 * i + 1] << 8) | (rgb[3 * i + 2] << 16);
+}
+
+__global__ void unpack_rgb(const uint32_t* packed, uint8_t* rgb, int count) {
+    int i = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) {
+        return;
+    }
+    uint32_t p = packed[i];
+    rgb[3 * i] = static_cast<uint8_t>(p & 0xFFu);
+    rgb[3 * i + 1] = static_cast<uint8_t>((p >> 8) & 0xFFu);
+    rgb[3 * i + 2] = static_cast<uint8_t>((p >> 16) & 0xFFu);
 }
 
 __global__ void convolve_gray(const uint8_t* src, uint8_t* dst, int W, int H,
@@ -136,6 +160,26 @@ void gpu_pipeline(const Image& img, uint8_t* in, uint8_t* tmp, uint8_t* out) {
     convolve(img, tmp, out, EMBOSS_RADIUS, EMBOSS_BIAS, true);
 }
 
+void to_work(const Image& img, const uint8_t* d_rgb, uint8_t* d_work) {
+    const int count = img.W * img.H;
+    if (img.channels == 3) {
+        pack_rgb<<<blocks_for(count), THREADS>>>(d_rgb, reinterpret_cast<uint32_t*>(d_work), count);
+        check(cudaGetLastError());
+    } else {
+        check(cudaMemcpy(d_work, d_rgb, count, cudaMemcpyDeviceToDevice));
+    }
+}
+
+void from_work(const Image& img, const uint8_t* d_work, uint8_t* d_rgb) {
+    const int count = img.W * img.H;
+    if (img.channels == 3) {
+        unpack_rgb<<<blocks_for(count), THREADS>>>(reinterpret_cast<const uint32_t*>(d_work), d_rgb, count);
+        check(cudaGetLastError());
+    } else {
+        check(cudaMemcpy(d_rgb, d_work, count, cudaMemcpyDeviceToDevice));
+    }
+}
+
 std::vector<float> make_gauss(float sigma) {
     constexpr int K = 2 * GAUSS_RADIUS + 1;
     std::vector<float> w(K * K);
@@ -174,34 +218,6 @@ void save_png(const std::string& path, const Image& img, const std::vector<uint8
     }
 }
 
-std::vector<uint8_t> to_device(const Image& img) {
-    if (img.channels == 1) {
-        return img.pixels;
-    }
-    const size_t count = static_cast<size_t>(img.W) * img.H;
-    std::vector<uint8_t> packed(count * sizeof(uint32_t));
-    uint32_t* words = reinterpret_cast<uint32_t*>(packed.data());
-    for (size_t i = 0; i < count; ++i) {
-        words[i] = img.pixels[3 * i] | (img.pixels[3 * i + 1] << 8) | (img.pixels[3 * i + 2] << 16);
-    }
-    return packed;
-}
-
-std::vector<uint8_t> from_device(const Image& img, const std::vector<uint8_t>& device_bytes) {
-    if (img.channels == 1) {
-        return device_bytes;
-    }
-    const size_t count = static_cast<size_t>(img.W) * img.H;
-    const uint32_t* words = reinterpret_cast<const uint32_t*>(device_bytes.data());
-    std::vector<uint8_t> rgb(count * 3);
-    for (size_t i = 0; i < count; ++i) {
-        rgb[3 * i] = static_cast<uint8_t>(words[i] & 0xFFu);
-        rgb[3 * i + 1] = static_cast<uint8_t>((words[i] >> 8) & 0xFFu);
-        rgb[3 * i + 2] = static_cast<uint8_t>((words[i] >> 16) & 0xFFu);
-    }
-    return rgb;
-}
-
 std::vector<uint8_t> cpu_convolve(const Image& img, const std::vector<uint8_t>& src,
                                   const std::vector<float>& weights, int R, float bias) {
     const int K = 2 * R + 1;
@@ -233,15 +249,19 @@ bool run(const Image& img, const char* name, const std::string& output_base,
     const auto cpu_end = std::chrono::high_resolution_clock::now();
     const double cpu_ms = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
 
-    const std::vector<uint8_t> device_in = to_device(img);
-    const size_t bytes = device_in.size();
+    const int count = img.W * img.H;
+    const size_t rgb_bytes = img.pixels.size();
+    const size_t work_bytes = img.channels == 3 ? static_cast<size_t>(count) * sizeof(uint32_t) : count;
+    uint8_t* d_rgb;
     uint8_t* d_in;
     uint8_t* d_tmp;
     uint8_t* d_out;
-    check(cudaMalloc(&d_in, bytes));
-    check(cudaMalloc(&d_tmp, bytes));
-    check(cudaMalloc(&d_out, bytes));
-    check(cudaMemcpy(d_in, device_in.data(), bytes, cudaMemcpyHostToDevice));
+    check(cudaMalloc(&d_rgb, rgb_bytes));
+    check(cudaMalloc(&d_in, work_bytes));
+    check(cudaMalloc(&d_tmp, work_bytes));
+    check(cudaMalloc(&d_out, work_bytes));
+    check(cudaMemcpy(d_rgb, img.pixels.data(), rgb_bytes, cudaMemcpyHostToDevice));
+    to_work(img, d_rgb, d_in);
 
     gpu_pipeline(img, d_in, d_tmp, d_out);
     check(cudaDeviceSynchronize());
@@ -260,16 +280,17 @@ bool run(const Image& img, const char* name, const std::string& output_base,
     check(cudaEventDestroy(start));
     check(cudaEventDestroy(stop));
 
-    std::vector<uint8_t> device_mid(bytes);
-    std::vector<uint8_t> device_out(bytes);
-    check(cudaMemcpy(device_mid.data(), d_tmp, bytes, cudaMemcpyDeviceToHost));
-    check(cudaMemcpy(device_out.data(), d_out, bytes, cudaMemcpyDeviceToHost));
+    std::vector<uint8_t> host_mid(rgb_bytes);
+    std::vector<uint8_t> host_out(rgb_bytes);
+    from_work(img, d_tmp, d_rgb);
+    check(cudaMemcpy(host_mid.data(), d_rgb, rgb_bytes, cudaMemcpyDeviceToHost));
+    from_work(img, d_out, d_rgb);
+    check(cudaMemcpy(host_out.data(), d_rgb, rgb_bytes, cudaMemcpyDeviceToHost));
+
+    check(cudaFree(d_rgb));
     check(cudaFree(d_in));
     check(cudaFree(d_tmp));
     check(cudaFree(d_out));
-
-    const std::vector<uint8_t> host_mid = from_device(img, device_mid);
-    const std::vector<uint8_t> host_out = from_device(img, device_out);
 
     const std::string gauss_path = output_base + "_gauss.png";
     const std::string emboss_path = output_base + "_emboss.png";
