@@ -81,8 +81,8 @@ __global__ void convolve_gray(const uint8_t* src, uint8_t* dst, int W, int H,
     dst[y * W + x] = to_u8(sum);
 }
 
-__global__ void convolve_rgba(const uint8_t* src_bytes, uint8_t* dst_bytes, int W, int H,
-                              int R, float bias, bool use_emboss) {
+__global__ void convolve_rgb(const uint8_t* src_bytes, uint8_t* dst_bytes, int W, int H,
+                             int R, float bias, bool use_emboss) {
     const uint32_t* src = reinterpret_cast<const uint32_t*>(src_bytes);
     uint32_t* dst = reinterpret_cast<uint32_t*>(dst_bytes);
     const int K = 2 * R + 1;
@@ -116,16 +116,15 @@ __global__ void convolve_rgba(const uint8_t* src_bytes, uint8_t* dst_bytes, int 
             b += w * ((p >> 16) & 0xFFu);
         }
     }
-    const uint32_t alpha = tile[threadIdx.y + R][threadIdx.x + R] & 0xFF000000u;
-    dst[y * W + x] = to_u8(r) | (to_u8(g) << 8) | (to_u8(b) << 16) | alpha;
+    dst[y * W + x] = to_u8(r) | (to_u8(g) << 8) | (to_u8(b) << 16);
 }
 
 void convolve(const Image& img, const uint8_t* src, uint8_t* dst,
               int R, float bias, bool use_emboss) {
     const dim3 block(BLOCK, BLOCK);
     const dim3 grid((img.W + BLOCK - 1) / BLOCK, (img.H + BLOCK - 1) / BLOCK);
-    if (img.channels == 4) {
-        convolve_rgba<<<grid, block>>>(src, dst, img.W, img.H, R, bias, use_emboss);
+    if (img.channels == 3) {
+        convolve_rgb<<<grid, block>>>(src, dst, img.W, img.H, R, bias, use_emboss);
     } else {
         convolve_gray<<<grid, block>>>(src, dst, img.W, img.H, R, bias, use_emboss);
     }
@@ -175,16 +174,42 @@ void save_png(const std::string& path, const Image& img, const std::vector<uint8
     }
 }
 
+std::vector<uint8_t> to_device(const Image& img) {
+    if (img.channels == 1) {
+        return img.pixels;
+    }
+    const size_t count = static_cast<size_t>(img.W) * img.H;
+    std::vector<uint8_t> packed(count * sizeof(uint32_t));
+    uint32_t* words = reinterpret_cast<uint32_t*>(packed.data());
+    for (size_t i = 0; i < count; ++i) {
+        words[i] = img.pixels[3 * i] | (img.pixels[3 * i + 1] << 8) | (img.pixels[3 * i + 2] << 16);
+    }
+    return packed;
+}
+
+std::vector<uint8_t> from_device(const Image& img, const std::vector<uint8_t>& device_bytes) {
+    if (img.channels == 1) {
+        return device_bytes;
+    }
+    const size_t count = static_cast<size_t>(img.W) * img.H;
+    const uint32_t* words = reinterpret_cast<const uint32_t*>(device_bytes.data());
+    std::vector<uint8_t> rgb(count * 3);
+    for (size_t i = 0; i < count; ++i) {
+        rgb[3 * i] = static_cast<uint8_t>(words[i] & 0xFFu);
+        rgb[3 * i + 1] = static_cast<uint8_t>((words[i] >> 8) & 0xFFu);
+        rgb[3 * i + 2] = static_cast<uint8_t>((words[i] >> 16) & 0xFFu);
+    }
+    return rgb;
+}
+
 std::vector<uint8_t> cpu_convolve(const Image& img, const std::vector<uint8_t>& src,
                                   const std::vector<float>& weights, int R, float bias) {
     const int K = 2 * R + 1;
     const int C = img.channels;
-    const int color_channels = std::min(C, 3);
     std::vector<uint8_t> dst(src.size());
     for (int y = 0; y < img.H; ++y) {
         for (int x = 0; x < img.W; ++x) {
-            const size_t base = static_cast<size_t>(y * img.W + x) * C;
-            for (int c = 0; c < color_channels; ++c) {
+            for (int c = 0; c < C; ++c) {
                 float sum = bias;
                 for (int dy = -R; dy <= R; ++dy) {
                     for (int dx = -R; dx <= R; ++dx) {
@@ -193,10 +218,7 @@ std::vector<uint8_t> cpu_convolve(const Image& img, const std::vector<uint8_t>& 
                         sum += weights[(dy + R) * K + (dx + R)] * src[(sy * img.W + sx) * C + c];
                     }
                 }
-                dst[base + c] = to_u8(sum);
-            }
-            if (C == 4) {
-                dst[base + 3] = src[base + 3];
+                dst[(y * img.W + x) * C + c] = to_u8(sum);
             }
         }
     }
@@ -211,14 +233,15 @@ bool run(const Image& img, const char* name, const std::string& output_base,
     const auto cpu_end = std::chrono::high_resolution_clock::now();
     const double cpu_ms = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
 
-    const size_t bytes = img.pixels.size();
+    const std::vector<uint8_t> device_in = to_device(img);
+    const size_t bytes = device_in.size();
     uint8_t* d_in;
     uint8_t* d_tmp;
     uint8_t* d_out;
     check(cudaMalloc(&d_in, bytes));
     check(cudaMalloc(&d_tmp, bytes));
     check(cudaMalloc(&d_out, bytes));
-    check(cudaMemcpy(d_in, img.pixels.data(), bytes, cudaMemcpyHostToDevice));
+    check(cudaMemcpy(d_in, device_in.data(), bytes, cudaMemcpyHostToDevice));
 
     gpu_pipeline(img, d_in, d_tmp, d_out);
     check(cudaDeviceSynchronize());
@@ -237,13 +260,16 @@ bool run(const Image& img, const char* name, const std::string& output_base,
     check(cudaEventDestroy(start));
     check(cudaEventDestroy(stop));
 
-    std::vector<uint8_t> host_mid(bytes);
-    std::vector<uint8_t> host_out(bytes);
-    check(cudaMemcpy(host_mid.data(), d_tmp, bytes, cudaMemcpyDeviceToHost));
-    check(cudaMemcpy(host_out.data(), d_out, bytes, cudaMemcpyDeviceToHost));
+    std::vector<uint8_t> device_mid(bytes);
+    std::vector<uint8_t> device_out(bytes);
+    check(cudaMemcpy(device_mid.data(), d_tmp, bytes, cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(device_out.data(), d_out, bytes, cudaMemcpyDeviceToHost));
     check(cudaFree(d_in));
     check(cudaFree(d_tmp));
     check(cudaFree(d_out));
+
+    const std::vector<uint8_t> host_mid = from_device(img, device_mid);
+    const std::vector<uint8_t> host_out = from_device(img, device_out);
 
     const std::string gauss_path = output_base + "_gauss.png";
     const std::string emboss_path = output_base + "_emboss.png";
@@ -251,7 +277,7 @@ bool run(const Image& img, const char* name, const std::string& output_base,
     save_png(emboss_path, img, host_out);
 
     int max_diff = 0;
-    for (size_t i = 0; i < bytes; ++i) {
+    for (size_t i = 0; i < host_out.size(); ++i) {
         max_diff = std::max(max_diff, std::abs(static_cast<int>(host_out[i]) - static_cast<int>(reference[i])));
     }
     const bool match = max_diff <= MAX_ALLOWED_DIFF;
@@ -277,7 +303,7 @@ bool process_image(const std::filesystem::path& path, const std::vector<float>& 
     const std::string input_path = path.string();
     const std::string stem = path.stem().string();
 
-    const Image color = load_image(input_path, 4);
+    const Image color = load_image(input_path, 3);
     if (color.W < DIM_MIN || color.W > DIM_MAX || color.H < DIM_MIN || color.H > DIM_MAX) {
         std::cerr << "Skipping " << input_path << ": W and H must be in ["
                   << DIM_MIN << ", " << DIM_MAX << "]\n";
